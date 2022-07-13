@@ -20,7 +20,6 @@ pub trait Rewriting
 pub trait EnvTrait {
     fn empty() -> Self;
     fn compose(self,other: &Self) -> Self;
-    //fn get(&self, var: Var) -> Res;
 }
 
 pub trait Rename {
@@ -53,9 +52,6 @@ impl<Goals, Env> CPoint<Goals, Env>
     }
 }
 
-
-
-
 pub enum Soln<Goals, Env>
 {
     CPoints([CPoint<Goals, Env>;2]),
@@ -75,7 +71,7 @@ pub trait DBTrait
         goal: &Goal,
         env:  &Env,
         clause_range: RangeFrom<usize>,
-        // use the depth
+        // uses the depth as renaming index
         renaming_index: usize
     )
     -> Option<(Self::Goals, Env, RangeFrom<usize>)>
@@ -85,7 +81,6 @@ pub trait DBTrait
         Goal: Rewriting<Head=Self::Head, Env=Env>,
         Self::Goals: Rename + Extend<Goal> + Clone,
         Self: Index<RangeFrom<usize>, Output=[(Self::Goals, Self::Head)]>,
-
     {
 
         let range = clause_range.clone();
@@ -101,20 +96,13 @@ pub trait DBTrait
                     //println!("\n\n{:?}", goal);
                     //println!("{:?}", &args.clauses.as_slice()[i]);
                     let ret_env = new_env.compose(env);
-                    // let cp_args0 = CPoint {
-                    //     clauses: self.clauses,
-                    //     clause_range: 0..,
-                    //     depth: self.depth + 1
-                    // };
                     let clause_range = (clause_range.start+i+1)..;
 
                     // an optimisation where the body is renamed only when necessary
                     let mut new_body: Self::Goals = body.clone();
                     new_body.rename(renaming_index);
     
-                    // defer renaming of the body
-                    return Some((new_body, ret_env, clause_range))
-    
+                    return Some((new_body, ret_env, clause_range))    
                 }
                 Err(_) => continue
             }
@@ -140,7 +128,6 @@ pub trait DBTrait
     {
         let mut goals_iter = (&cpoint.goals).into_iter();
 
-        //match goals_iter.peekable().peek() {
         match goals_iter.next() {
             Some(goal_ref) => {
 
@@ -202,7 +189,6 @@ where
     cpoints: Vec<CPoint<Goals, Env>>,
     strategy: Strategy
 }
-
 
 impl<'a, Goal, Env, DB> Iterator for CPointIter<'a, DB::Goals, Env, DB>
 where
