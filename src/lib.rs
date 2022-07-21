@@ -1,3 +1,8 @@
+#![allow(warnings, unused)]
+
+extern crate log;
+use ::std::fmt;
+use log::debug;
 use std::ops::{Index, RangeFrom};
 
 pub trait PrettyPrint {
@@ -9,220 +14,293 @@ pub trait Unify<Head, Env> {
     fn unify(&self, other: &Head, env: &mut Env) -> Result<(), Self::Err>;
 }
 
-pub trait Rewriting
-{
-    type Head;
-    type Res: Unify<Self::Head, Self::Env>;
-    type Env;
-    fn subst(&self, env: &Self::Env) -> Self::Res;
+pub trait Subst<Env> {
+    type Res;
+    fn subst(&self, env: &Env) -> Self::Res;
 }
 
-pub trait EnvTrait {
+pub trait EnvTrait: std::fmt::Debug {
     fn empty() -> Self;
-    fn compose(self,other: &Self) -> Self;
+    fn compose(self, other: &Self) -> Self;
 }
 
 pub trait Rename {
     fn rename(&mut self, index: usize);
 }
 
+impl<T, Ts> Rename for Ts
+where
+    for<'a> &'a mut Ts: IntoIterator<Item = &'a mut T>,
+    T: Rename,
+{
+    fn rename(&mut self, index: usize) {
+        self.into_iter().for_each(|t: &mut T| t.rename(index))
+    }
+}
+
 pub enum Strategy {
     DFS,
     BFS,
-    DLS(usize)
+    DLS(usize),
 }
 
-pub struct CPoint<Goals, Env>
+pub struct CPoint<DB, Goals, Env>
 {
     goals: Goals,
     env: Env,
-    clause_range: RangeFrom<usize>,
+    db: DB,
     depth: usize,
 }
 
-impl<Goals, Env> CPoint<Goals, Env>
-{
-    fn new(goals: Goals, env: Env) -> Self {
+impl<'a, DB, Goals, Env> CPoint<DB, Goals, Env> {
+    fn new(goals: Goals, env: Env, db: DB) -> Self {
         Self {
             goals,
             env,
-            clause_range: 0..,
-            depth: 1
+            db,
+            depth: 1,
         }
     }
 }
 
-pub enum Soln<Goals, Env>
+pub enum Soln<DB, Goals, Env>
 {
-    CPoints([CPoint<Goals, Env>;2]),
+    CPoints([CPoint<DB, Goals, Env>; 2]),
+    CPoint(CPoint<DB, Goals, Env>),
     Res(Env),
-    NoRule
+    NoRule,
+}
+
+impl<'a, T, Goals, Head> DBTrait for T
+where
+    Goals: 'a,
+    Head: 'a,
+    T: Iterator<Item=&'a (Goals, Head)>
+{
+    type Goals = Goals;
+    type Head = Head;
 }
 
 pub trait DBTrait
- where
-    Self: Extend<(Self::Goals, Self::Head)>
+where
 {
     type Goals;
     type Head;
 
-    fn resolve_one_step<'a, Goal, Env>(
-        &'a self,
+    fn resolve_one_step<'b, Goal, Env>(
+        mut self,
         goal: &Goal,
-        env:  &Env,
-        clause_range: RangeFrom<usize>,
+        env: &Env,
         // uses the depth as renaming index
-        renaming_index: usize
-    )
-    -> Option<(Self::Goals, Env, RangeFrom<usize>)>
+        renaming_index: usize,
+    ) -> Option<(Self::Goals, Env, Self)>
     where
+        // resolve one step
         Self::Head: Rename + Clone,
         Env: EnvTrait,
-        Goal: Rewriting<Head=Self::Head, Env=Env>,
-        Self::Goals: Rename + Extend<Goal> + Clone,
-        Self: Index<RangeFrom<usize>, Output=[(Self::Goals, Self::Head)]>,
+        Goal: Subst<Env>,
+        Goal::Res: Unify<Self::Head, Env> + fmt::Debug,
+        Self::Goals: Rename +  Clone,
+        Self: Sized,
+        Self::Goals: 'b,
+        Self::Head: 'b,
+        Self: Iterator<Item = &'b (Self::Goals, Self::Head)>,
     {
+        self.find_map(|(body, head)| {
+            let mut head = head.clone();
+            head.rename(renaming_index);
 
-        let range = clause_range.clone();
-        for (i, (body, head)) in self[range].iter().enumerate()
-        {
-
-            head.clone().rename(renaming_index);
             let goal = goal.subst(env);
-    
+
             let mut new_env = Env::empty();
             match goal.unify(&head, &mut new_env) {
                 Ok(()) => {
-                    //println!("\n\n{:?}", goal);
-                    //println!("{:?}", &args.clauses.as_slice()[i]);
                     let ret_env = new_env.compose(env);
-                    let clause_range = (clause_range.start+i+1)..;
-
+                    debug!("goal:     {:?}", goal);
+                    //debug!("db_index: {}, depth: {}", clause_range.start+i, renaming_index);
+                    debug!("Env:      {:?}\n", ret_env);
+                    
+      
+   
                     // an optimisation where the body is renamed only when necessary
                     let mut new_body: Self::Goals = body.clone();
                     new_body.rename(renaming_index);
-    
-                    return Some((new_body, ret_env, clause_range))    
+
+                    return Some((new_body, ret_env));
                 }
-                Err(_) => continue
+                Err(_) => None,
             }
-            
-        }
-        //println!("\n\nUnsolved Goal: {:?}", self.subst(&args.env));
-        None
+        })
+        .map(|(body, env)| (body, env, self))
     }
-    
-    fn resolve<Goal, Env>(
-        &self,
-        cpoint: CPoint<Self::Goals, Env>
-    ) -> Soln<Self::Goals, Env>
-        where
+
+    fn resolve<'b,  Goal, Env, F>(
+        self,
+        cpoint: CPoint<Self, Self::Goals, Env>,
+        solve_primitive: F,
+    ) -> Soln<Self, Self::Goals, Env>
+    where
+        // resolve_one_step
         Self::Head: Rename + Clone,
         Env: EnvTrait,
-        Goal: Rewriting<Head=Self::Head, Env=Env>,
-        Self::Goals: Rename + Extend<Goal> + Clone,
-        Self: Index<RangeFrom<usize>, Output=[(Self::Goals, Self::Head)]>,
-
+        Goal: Subst<Env>,
+        Goal::Res: Unify<Self::Head, Env> + fmt::Debug,
+        Self::Goals: Rename +  Clone,
+        Self: Sized,
+        Self::Goals: 'b,
+        Self::Head: 'b,
+        Self: Iterator<Item = &'b (Self::Goals, Self::Head)>,
+        // resolve
         Goal: Clone,
-        for<'b> &'b Self::Goals: IntoIterator<Item=&'b Goal>
+        Self: Clone,
+        Self::Goals: Extend<Goal>,
+        for<'c> &'c Self::Goals: IntoIterator<Item=&'c Goal>,
+        Self::Goals: FromIterator<Goal>,
+        F: Fn(&Goal, &Env) -> Option<Env>
     {
         let mut goals_iter = (&cpoint.goals).into_iter();
 
         match goals_iter.next() {
             Some(goal_ref) => {
 
-                let some_res = self.resolve_one_step(
-                    goal_ref,
-                    &cpoint.env,
-                    cpoint.clause_range.clone(),
-                    cpoint.depth);
+                match solve_primitive(goal_ref, &cpoint.env) {
+                    Some(new_env) => {
+                        let new_goals = goals_iter.cloned().collect();
 
-                match some_res {
-                    Some((mut new_goals, new_env, new_range)) => {
+                        let ret_env = new_env.compose(&cpoint.env);
+                        let mut cp = cpoint;
+                        cp.env = ret_env;
+                        cp.goals = new_goals;
+                        return Soln::CPoint(cp)
+                    },
+                    None => {
+                
+                        let some_res = cpoint.db.clone().resolve_one_step(
+                            goal_ref,
+                            &cpoint.env,
+                            cpoint.depth);
 
-                        new_goals.extend(goals_iter.cloned());
-                        let cp0 = CPoint {
-                            goals: new_goals,
-                            env: new_env,
-                            clause_range: 0..,
-                            depth: cpoint.depth + 1
-                        };
+                        match some_res {
+                            Some((mut new_goals, new_env, rest_db)) => {
+                                new_goals.extend(goals_iter.cloned());
+                                let cp0 = CPoint {
+                                    goals: new_goals,
+                                    env: new_env,
+                                    db: self,
+                                    depth: cpoint.depth + 1,
+                                };
 
-                        let mut cp1 = cpoint;
-                        cp1.clause_range = new_range;
+                                let mut cp1 = cpoint;
+                                cp1.db = rest_db;
 
-                        Soln::CPoints([cp0, cp1])
+                                Soln::CPoints([cp0, cp1])
+                            }
+                            None => Soln::NoRule,
+                        }
                     }
-                    None => Soln::NoRule
                 }
+
+
             }
-            None => Soln::Res(cpoint.env)
+            None => Soln::Res(cpoint.env),
         }
-        
     }
 
-    fn solve_goals<Env>(&self, goals: Self::Goals, env: Env, strategy: Strategy)
-    -> CPointIter<'_, Self::Goals, Env, Self>
+    
+    fn solve_goals_with<'b, Env, F>(
+        self,
+        goals: Self::Goals,
+        env: Env,
+        solve_primitive: F,
+        strategy: Strategy,
+    ) -> CPointIter<Self, Self::Goals, Env, F>
+    where
+        Self: Sized + Clone
     {
         CPointIter {
-            clause_db: self,
-            cpoints: vec![
-                CPoint::new(goals, env)
-            ],
-            strategy: strategy
+            clause_db: self.clone(),
+            cpoints: vec![CPoint::new(goals, env, self)],
+            solve_primitive: solve_primitive,
+            strategy: strategy,
         }
     }
 
-    fn solve_goal<Goal, Env>(&self, goal: Goal, env: Env, strategy: Strategy)
-    -> CPointIter<'_, Self::Goals, Env, Self>
+    fn solve_goals<'b, Goal, Env: EnvTrait, F>(
+        self,
+        goals: Self::Goals,
+        solve_primitive: F
+    ) -> CPointIter<Self, Self::Goals, Env, F>
+    where
+        Self: Sized + Clone
     {
-        //self.solve_goals(goal, env, strategy)
-        unimplemented!()
+        //TODO change to IDFS or SLG
+        self.solve_goals_with(goals, Env::empty(), solve_primitive, Strategy::DFS)
     }
 }
 
-pub struct CPointIter<'a, Goals, Env, DB>
-where
-    DB: ?Sized
+pub struct CPointIter<DB, Goals, Env, F>
 {
-    clause_db: &'a DB,
-    cpoints: Vec<CPoint<Goals, Env>>,
-    strategy: Strategy
+    clause_db: DB,
+    cpoints: Vec<CPoint<DB, Goals, Env>>,
+    solve_primitive: F,
+    strategy: Strategy,
 }
 
-impl<'a, Goal, Env, DB> Iterator for CPointIter<'a, DB::Goals, Env, DB>
+impl<'a, 'b, DB,Goal, Env, F> Iterator for CPointIter<DB, DB::Goals, Env, F>
 where
+    // resolve_one_step
     DB::Head: Rename + Clone,
     Env: EnvTrait,
-    Goal: Rewriting<Head=DB::Head, Env=Env>,
-    DB::Goals: Rename + Extend<Goal> + Clone,
-    DB: Index<RangeFrom<usize>, Output=[(DB::Goals, DB::Head)]>,
+    Goal: Subst<Env>,
+    Goal::Res: Unify<DB::Head, Env> + fmt::Debug,
+    DB::Goals: Rename +  Clone,
+    DB: Sized,
+    DB::Goals: 'b,
+    DB::Head: 'b,
+    DB: Iterator<Item = &'b (DB::Goals, DB::Head)>,
 
+    // resolve
     Goal: Clone,
-    for<'b> &'b DB::Goals: IntoIterator<Item=&'b Goal>,
-
-    DB: DBTrait
+    DB: Clone,
+    DB::Goals: Extend<Goal>,
+    for<'c> &'c DB::Goals: IntoIterator<Item=&'c Goal>,
+    F: Fn(&Goal, &Env) -> Option<Env>,
+    DB::Goals: FromIterator<Goal>,
+    // iterator
+    DB: DBTrait,
 {
     type Item = Env;
 
     fn next(&mut self) -> Option<Self::Item>
-    where
-    
     {
         loop {
-            match self.cpoints.pop().map(|cp| self.clause_db.resolve(cp)) {
+
+            let db = self.clause_db.clone();
+            let some_soln = self.cpoints.pop()
+            .map(|cp| {
+                 //debug!("\n\n\n-----------------------------");
+                //debug!("trying cp, clause_index = {:?}", cp.db);
+                db.resolve(cp, &self.solve_primitive)
+            });
+            match some_soln {
                 Some(Soln::Res(env)) => return Some(env),
                 Some(Soln::CPoints([cp0, cp1])) => match self.strategy {
-                    
                     Strategy::DFS => self.cpoints.extend([cp1, cp0]),
                     Strategy::BFS => self.cpoints.extend([cp0, cp1]),
                     Strategy::DLS(n) => {
                         unimplemented!()
                     }
-                }
+                },
+                Some(Soln::CPoint(cp)) => self.cpoints.push(cp),
                 Some(Soln::NoRule) => continue,
-                None => return None           
+                None => return None,
             }
         }
     }
 }
+
+
+trait Resolve
+where
+
+{}
