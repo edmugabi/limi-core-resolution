@@ -96,7 +96,7 @@ where
     ) -> Option<(Self::Goals, Env, Self)>
     where
         // resolve one step
-        Self::Head: Rename + Clone,
+        Self::Head: Rename + Clone + fmt::Debug,
         Env: EnvTrait,
         Goal: Subst<Env>,
         Goal::Res: Unify<Self::Head, Env> + fmt::Debug,
@@ -115,10 +115,15 @@ where
             let mut new_env = Env::empty();
             match goal.unify(&head, &mut new_env) {
                 Ok(()) => {
+                    debug!(
+                        "\nHead:     {:?}\ngoal:     {:?}\nEnv:      {:?}\n",
+                        head, goal, new_env
+                    );
+                    // debug!("", goal);
+                    // debug!("Env:      {:?}\n", new_env);
                     let ret_env = new_env.compose(env);
-                    debug!("goal:     {:?}", goal);
+
                     //debug!("db_index: {}, depth: {}", clause_range.start+i, renaming_index);
-                    debug!("Env:      {:?}\n", ret_env);
                     
       
    
@@ -141,7 +146,7 @@ where
     ) -> Soln<Self, Self::Goals, Env>
     where
         // resolve_one_step
-        Self::Head: Rename + Clone,
+        Self::Head: Rename + Clone + fmt::Debug,
         Env: EnvTrait,
         Goal: Subst<Env>,
         Goal::Res: Unify<Self::Head, Env> + fmt::Debug,
@@ -249,7 +254,7 @@ pub struct CPointIter<DB, Goals, Env, F>
 impl<'a, 'b, DB,Goal, Env, F> Iterator for CPointIter<DB, DB::Goals, Env, F>
 where
     // resolve_one_step
-    DB::Head: Rename + Clone,
+    DB::Head: Rename + Clone + fmt::Debug,
     Env: EnvTrait,
     Goal: Subst<Env>,
     Goal::Res: Unify<DB::Head, Env> + fmt::Debug,
